@@ -46,6 +46,7 @@ import com.google.idea.blaze.base.scope.output.IssueOutput;
 import com.google.idea.blaze.base.scope.output.StatusOutput;
 import com.google.idea.blaze.base.scope.scopes.TimingScope;
 import com.google.idea.blaze.base.scope.scopes.TimingScope.EventType;
+import com.google.idea.blaze.base.sync.BlazeSyncParams;
 import com.google.idea.blaze.base.sync.BlazeSyncPlugin;
 import com.google.idea.blaze.base.sync.SourceFolderProvider;
 import com.google.idea.blaze.base.sync.SyncMode;
@@ -222,7 +223,8 @@ public class BlazeAndroidSyncPlugin implements BlazeSyncPlugin {
       @Nullable BlazeProjectData oldBlazeProjectData,
       ModuleEditor moduleEditor,
       Module workspaceModule,
-      ModifiableRootModel workspaceModifiableModel) {
+      ModifiableRootModel workspaceModifiableModel,
+      BlazeSyncParams syncParams) {
     BlazeAndroidProjectStructureSyncer.updateProjectStructure(
         project,
         context,

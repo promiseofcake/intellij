@@ -29,6 +29,7 @@ import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.Scope;
 import com.google.idea.blaze.base.scope.scopes.TimingScope;
 import com.google.idea.blaze.base.scope.scopes.TimingScope.EventType;
+import com.google.idea.blaze.base.sync.BlazeSyncParams;
 import com.google.idea.blaze.base.sync.BlazeSyncPlugin;
 import com.google.idea.blaze.base.sync.SyncMode;
 import com.google.idea.blaze.base.sync.libraries.LibrarySource;
@@ -69,7 +70,8 @@ public class BlazeScalaSyncPlugin implements BlazeSyncPlugin {
       @Nullable BlazeProjectData oldBlazeProjectData,
       ModuleEditor moduleEditor,
       Module workspaceModule,
-      ModifiableRootModel workspaceModifiableModel) {
+      ModifiableRootModel workspaceModifiableModel,
+      BlazeSyncParams syncParams) {
     if (!blazeProjectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.SCALA)) {
       return;
     }

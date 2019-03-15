@@ -15,9 +15,14 @@
  */
 package com.google.idea.blaze.python.sync;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSetMultimap;
+import com.google.devtools.intellij.ideinfo.IntellijIdeInfo.PyIdeInfo.PythonVersion;
+import com.google.idea.blaze.base.ideinfo.PyIdeInfo;
+import com.google.idea.blaze.base.ideinfo.TargetIdeInfo;
 import com.google.idea.blaze.base.io.VfsUtils;
 import com.google.idea.blaze.base.model.BlazeProjectData;
 import com.google.idea.blaze.base.model.BlazeVersionData;
@@ -35,10 +40,12 @@ import com.google.idea.blaze.base.projectview.section.sections.WorkspaceTypeSect
 import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.output.IssueOutput;
 import com.google.idea.blaze.base.sync.BlazeSyncManager;
+import com.google.idea.blaze.base.sync.BlazeSyncParams;
 import com.google.idea.blaze.base.sync.BlazeSyncPlugin;
 import com.google.idea.blaze.base.sync.GenericSourceFolderProvider;
 import com.google.idea.blaze.base.sync.RefreshRequestType;
 import com.google.idea.blaze.base.sync.SourceFolderProvider;
+import com.google.idea.blaze.base.sync.SyncMode;
 import com.google.idea.blaze.base.sync.projectview.WorkspaceLanguageSettings;
 import com.google.idea.common.experiments.BoolExperiment;
 import com.google.idea.common.transactions.Transactions;
@@ -63,13 +70,20 @@ import com.jetbrains.python.facet.LibraryContributingFacet;
 import com.jetbrains.python.facet.PythonFacetSettings;
 import com.jetbrains.python.sdk.PythonSdkType;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import javax.annotation.Nullable;
 
 /** Allows people to use a python workspace. */
 public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
+
+  private static final ImmutableMap<PythonVersion, String> BASE_SDKS =
+      ImmutableMap.of(
+          PythonVersion.PY2, "/usr/bin/python2",
+          PythonVersion.PY3, "/usr/bin/python3");
 
   private static final BoolExperiment refreshExecRoot =
       new BoolExperiment("refresh.exec.root.python", true);
@@ -133,7 +147,11 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
       @Nullable BlazeProjectData oldBlazeProjectData,
       ModuleEditor moduleEditor,
       Module workspaceModule,
-      ModifiableRootModel workspaceModifiableModel) {
+      ModifiableRootModel workspaceModifiableModel,
+      BlazeSyncParams syncParams) {
+    if (syncParams.syncMode == SyncMode.NO_BUILD) {
+      return;
+    }
     updatePythonFacet(
         project, context, blazeProjectData, workspaceModule, workspaceModifiableModel);
   }
@@ -176,7 +194,7 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
       return;
     }
     LibraryContributingFacet<?> pythonFacet =
-        getOrCreatePythonFacet(project, context, workspaceModule);
+        getOrCreatePythonFacet(project, context, workspaceModule, blazeProjectData);
     if (pythonFacet == null) {
       return;
     }
@@ -198,7 +216,7 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
 
   @Nullable
   private static LibraryContributingFacet<?> getOrCreatePythonFacet(
-      Project project, BlazeContext context, Module module) {
+      Project project, BlazeContext context, Module module, BlazeProjectData blazeProjectData) {
     LibraryContributingFacet<?> facet = findPythonFacet(module);
     if (facet != null && isValidPythonSdk(PythonFacetUtil.getSdk(facet))) {
       return facet;
@@ -210,12 +228,22 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
       // a new facet.
       facetModel.removeFacet(facet);
     }
-    Sdk sdk = getOrCreatePythonSdk(project);
+
+    Sdk sdk = getOrCreatePythonSdk(project, blazeProjectData, context);
     if (sdk == null) {
-      String msg =
-          "Unable to find a Python SDK installed.\n"
-              + "After configuring a suitable SDK in the \"Project Structure\" dialog, "
-              + "sync the project again.";
+      String fixDirections =
+          "Configure a suitable Python Interpreter for the module \""
+              + module.getName()
+              + "\" via File->\"Project Structure...\", \"Project Settings\"->\"Facets\", then"
+              + " sync the project again.";
+      if (PlatformUtils.isCLion()) {
+        fixDirections =
+            "Configure a suitable Python Interpreter for the module \""
+                + module.getName()
+                + "\" via File->\"Settings...\", \"Build,"
+                + " Execution, Deployment\"->\"Python Interpreter\", then sync the project again.";
+      }
+      String msg = "Unable to find a compatible Python SDK installed.\n" + fixDirections;
       IssueOutput.error(msg).submit(context);
       return null;
     }
@@ -297,7 +325,7 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
     if (isValidPythonSdk(currentSdk)) {
       return;
     }
-    Sdk sdk = getOrCreatePythonSdk(project);
+    Sdk sdk = getOrCreatePythonSdk(project, blazeProjectData, context);
     if (sdk != null) {
       setProjectSdk(project, sdk);
     }
@@ -308,25 +336,138 @@ public class BlazePythonSyncPlugin implements BlazeSyncPlugin {
         .anyMatch(s -> s.isDeprecatedSdk(sdk));
   }
 
+  /**
+   * Returns any Python SDK it finds, preferring Python 3 over Python 2.
+   *
+   * @param project the project the SDK is for.
+   * @return a Python SDK.
+   */
   @Nullable
-  private static Sdk getOrCreatePythonSdk(Project project) {
-    for (PySdkSuggester suggester : PySdkSuggester.EP_NAME.getExtensions()) {
-      Sdk s = suggester.suggestSdk(project);
-      if (s != null) {
-        return s;
+  private static Sdk findAnyPythonSdk(Project project) {
+    return findCompatibleSdk(
+        project,
+        ImmutableSet.of(PythonVersion.PY3, PythonVersion.PY2),
+        ImmutableList.of(PythonVersion.PY3, PythonVersion.PY2));
+  }
+
+  /**
+   * Tries to find the first SDK on the 'compatible' list that exists on the local system and also
+   * is present in the 'configured' set.
+   *
+   * @param project the project the SDK is for.
+   * @param configured a set of python versions that targets in the project are configured for.
+   * @param compatible a set of python versions that are compatible with the targets in the project.
+   * @return a Python SDK
+   */
+  @VisibleForTesting
+  @Nullable
+  private static Sdk findCompatibleSdk(
+      Project project, Set<PythonVersion> configured, List<PythonVersion> compatible) {
+    for (PythonVersion version : compatible) {
+      if (!configured.contains(version)) {
+        continue;
+      }
+      for (PySdkSuggester suggester : PySdkSuggester.EP_NAME.getExtensions()) {
+        Sdk s = suggester.suggestSdk(project, version);
+        if (s != null) {
+          return s;
+        }
+      }
+      if (BASE_SDKS.containsKey(version)) {
+        Sdk s = PySdkSuggester.findPythonSdk(BASE_SDKS.get(version));
+        if (s != null) {
+          return s;
+        }
       }
     }
+    return null;
+  }
 
-    List<Sdk> sdk = PythonSdkType.getAllSdks();
-    if (!sdk.isEmpty()) {
-      return sdk.get(0);
+  static void populateCompatibility(
+      BlazeProjectData blazeProjectData,
+      Set<PythonVersion> configuredVersions,
+      List<PythonVersion> compatibleVersions) {
+    // compatibleVersions is an ordered list of python versions that will be reduced as target
+    // constraints are processed. Earlier entries have priority.
+    compatibleVersions.add(PythonVersion.PY3);
+    compatibleVersions.add(PythonVersion.PY2);
+
+    for (TargetIdeInfo ideInfo : blazeProjectData.getTargetMap().targets()) {
+      PyIdeInfo pyIdeInfo = ideInfo.getPyIdeInfo();
+      if (pyIdeInfo == null) {
+        continue;
+      }
+      if (pyIdeInfo.getPythonVersion() != PythonVersion.UNKNOWN) {
+        configuredVersions.add(pyIdeInfo.getPythonVersion());
+      }
+
+      switch (pyIdeInfo.getSrcsVersion()) {
+        case SRC_PY2:
+        case SRC_PY2ONLY:
+          compatibleVersions.removeIf(version -> version != PythonVersion.PY2);
+          break;
+        case SRC_PY3:
+        case SRC_PY3ONLY:
+          compatibleVersions.removeIf(version -> version != PythonVersion.PY3);
+          break;
+        default:
+          break;
+      }
     }
-    return SdkConfigurationUtil.createAndAddSDK("/usr/bin/python2.7", PythonSdkType.getInstance());
+  }
+
+  @Nullable
+  private static Sdk getOrCreatePythonSdk(
+      Project project, BlazeProjectData blazeProjectData, BlazeContext context) {
+    Set<PythonVersion> configuredVersions = new HashSet<>();
+    List<PythonVersion> compatibleVersions = new ArrayList<>();
+
+    createSDKsIfNeeded();
+
+    populateCompatibility(blazeProjectData, configuredVersions, compatibleVersions);
+
+    if (configuredVersions.isEmpty()) {
+      return findAnyPythonSdk(project);
+    }
+
+    Sdk sdk = findCompatibleSdk(project, configuredVersions, compatibleVersions);
+
+    if (sdk == null) {
+      IssueOutput.warn("Could not find a python SDK compatible with all targets.").submit(context);
+      Sdk anySdk = findAnyPythonSdk(project);
+      if (anySdk != null) {
+        IssueOutput.warn("Using: " + anySdk.getVersionString()).submit(context);
+      }
+      return anySdk;
+    }
+
+    if (configuredVersions.size() > 1) {
+      IssueOutput.warn("Targets configured for different python versions.").submit(context);
+      IssueOutput.warn("Using: " + sdk.getVersionString()).submit(context);
+    }
+    return sdk;
   }
 
   private static void setProjectSdk(Project project, Sdk sdk) {
     Transactions.submitWriteActionTransactionAndWait(
         () -> ProjectRootManager.getInstance(project).setProjectSdk(sdk));
+  }
+
+  private static void createSDKsIfNeeded() {
+    for (PySdkSuggester suggester : PySdkSuggester.EP_NAME.getExtensions()) {
+      suggester.syncSdks();
+    }
+
+    for (String homePath : BASE_SDKS.values()) {
+      if (!new File(homePath).exists()) {
+        continue;
+      }
+      Sdk sdk = PySdkSuggester.findPythonSdk(homePath);
+      if (sdk != null) {
+        continue;
+      }
+      SdkConfigurationUtil.createAndAddSDK(homePath, PythonSdkType.getInstance());
+    }
   }
 
   @Override

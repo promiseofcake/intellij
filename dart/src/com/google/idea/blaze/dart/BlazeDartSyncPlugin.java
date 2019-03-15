@@ -25,6 +25,7 @@ import com.google.idea.blaze.base.plugin.PluginUtils;
 import com.google.idea.blaze.base.projectview.ProjectViewSet;
 import com.google.idea.blaze.base.scope.BlazeContext;
 import com.google.idea.blaze.base.scope.output.IssueOutput;
+import com.google.idea.blaze.base.sync.BlazeSyncParams;
 import com.google.idea.blaze.base.sync.BlazeSyncPlugin;
 import com.google.idea.blaze.base.sync.libraries.LibrarySource;
 import com.intellij.openapi.module.Module;
@@ -62,7 +63,8 @@ public class BlazeDartSyncPlugin implements BlazeSyncPlugin {
       @Nullable BlazeProjectData oldBlazeProjectData,
       ModuleEditor moduleEditor,
       Module workspaceModule,
-      ModifiableRootModel workspaceModifiableModel) {
+      ModifiableRootModel workspaceModifiableModel,
+      BlazeSyncParams syncParams) {
     if (!blazeProjectData.getWorkspaceLanguageSettings().isLanguageActive(LanguageClass.DART)) {
       return;
     }

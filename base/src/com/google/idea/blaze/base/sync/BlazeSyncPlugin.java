@@ -167,7 +167,8 @@ public interface BlazeSyncPlugin {
       @Nullable BlazeProjectData oldBlazeProjectData,
       ModuleEditor moduleEditor,
       Module workspaceModule,
-      ModifiableRootModel workspaceModifiableModel) {}
+      ModifiableRootModel workspaceModifiableModel,
+      BlazeSyncParams syncParams) {}
 
   /**
    * Updates in-memory state that isn't serialized by IntelliJ.

@@ -942,7 +942,8 @@ final class BlazeSyncTask implements Progressive {
           oldBlazeProjectData,
           moduleEditor,
           workspaceModule,
-          workspaceModifiableModel);
+          workspaceModifiableModel,
+          syncParams);
     }
 
     createProjectDataDirectoryModule(
